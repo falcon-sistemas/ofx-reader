@@ -366,14 +366,22 @@ begin
 end;
 
 procedure TOFXReader.FormatOFX(const InputFile, OutputFile: string);
+const
+  IndentWidth = 2; // era 4
 var
   Input, Output: TStringList;
   i, Indent: Integer;
-  Line, CurrentTag: string;
+  Line, CurrentTag, ValueText: string;
+  InBody: Boolean;
 
-  function TrimTags(const S: string): string;
+  function StartsWithTag(const S: string): Boolean;
   begin
-    Result := StringReplace(StringReplace(S, '<', '', []), '>', '', []);
+    Result := (S <> '') and (S[1] = '<');
+  end;
+
+  function Pad: string;
+  begin
+    Result := StringOfChar(' ', Indent * IndentWidth);
   end;
 
 begin
@@ -383,42 +391,70 @@ begin
     Input.LoadFromFile(InputFile);
 
     Indent := 0;
+    InBody := False;
 
     for i := 0 to Input.Count - 1 do
     begin
       Line := Trim(Input[i]);
-
       if Line = '' then
         Continue;
 
-      while Length(Line) > 0 do
+      // Cabeçalho: mantém como está (sem juntar tudo numa linha)
+      if (not InBody) and (Pos('<OFX', UpperCase(Line)) = 0) and (not StartsWithTag(Line)) then
       begin
-        if Line[1] = '<' then
+        Output.Add(Line);
+        Continue;
+      end;
+
+      if not InBody then
+        InBody := True;
+
+      while Line <> '' do
+      begin
+        if StartsWithTag(Line) then
         begin
+          // Se for fechamento, diminui antes de imprimir
           if Pos('</', Line) = 1 then
             Dec(Indent);
 
-          CurrentTag := Copy(Line, 1, Pos('>', Line));
-          Line := Copy(Line, Pos('>', Line) + 1, MaxInt);
-
-          if (Length(Line) > 0) and (Line[1] <> '<') then
+          if Pos('>', Line) = 0 then
           begin
-            // Tag com valor curto fica na mesma linha
-            Output.Add(StringOfChar(' ', Indent * 4) + CurrentTag + Trim(Copy(Line, 1, Pos('<', Line) - 1)) + Copy(Line, Pos('<', Line), Pos('>', Line) - Pos('<', Line)));
-            Line := Copy(Line, Pos('>', Line) + 1, MaxInt);
+            Output.Add(Pad + Line);
+            Break;
+          end;
+
+          CurrentTag := Copy(Line, 1, Pos('>', Line));              // inclui o '>'
+          Line := Copy(Line, Pos('>', Line) + 1, MaxInt);           // resto após '>'
+
+          // Caso tenha valor antes do próximo '<' => leaf tag: <TAG>valor (NÃO incrementa indent)
+          if (Line <> '') and (Line[1] <> '<') and (Pos('<', Line) > 0) then
+          begin
+            ValueText := Trim(Copy(Line, 1, Pos('<', Line) - 1));
+            Output.Add(Pad + CurrentTag + ValueText);
+
+            // continua processando a partir do próximo tag
+            Line := Copy(Line, Pos('<', Line), MaxInt);
+
+            // IMPORTANTÍSSIMO: leaf tag não abre bloco, então NÃO mexe no Indent aqui
+            Continue;
           end
           else
-            Output.Add(StringOfChar(' ', Indent * 4) + CurrentTag);
+          begin
+            Output.Add(Pad + CurrentTag);
+          end;
 
-          if (Pos('</', CurrentTag) = 0) and (Pos('/>', CurrentTag) = 0) and (Line = '') then
+          // Só incrementa se for um container (tag de abertura real)
+          if (Pos('</', CurrentTag) = 0) and (Pos('/>', CurrentTag) = 0) then
             Inc(Indent);
         end
         else
         begin
+          // Texto solto: cola na última linha (caso exista)
           if Output.Count > 0 then
             Output[Output.Count - 1] := Output[Output.Count - 1] + Trim(Line)
           else
-            Output.Add(StringOfChar(' ', Indent * 4) + Trim(Line));
+            Output.Add(Pad + Trim(Line));
+
           Line := '';
         end;
       end;
